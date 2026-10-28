@@ -1,5 +1,5 @@
 const express = require('express');
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestWaWebVersion } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestWaWebVersion, Browsers } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const fs = require('fs');
 const path = require('path');
@@ -17,6 +17,7 @@ app.post('/api/pair', async (req, res) => {
     const { phoneNumber } = req.body;
     if (!phoneNumber) return res.status(400).json({ error: 'Phone number required' });
 
+    // Ensure the number is clean (digits only, with country code)
     const cleanNumber = phoneNumber.replace(/[^0-9]/g, '');
     
     // Create a temporary folder for this session
@@ -24,7 +25,7 @@ app.post('/api/pair', async (req, res) => {
     if (!fs.existsSync(sessionFolder)) fs.mkdirSync(sessionFolder, { recursive: true });
 
     try {
-        // Fetch the latest WhatsApp Web version to prevent "Couldn't link device" errors
+        // Fetch the latest WhatsApp Web version
         const { version, isLatest } = await fetchLatestWaWebVersion();
         console.log(`Using WA v${version.join('.')}, isLatest: ${isLatest}`);
 
@@ -35,7 +36,7 @@ app.post('/api/pair', async (req, res) => {
             auth: state,
             printQRInTerminal: false,
             logger: pino({ level: 'silent' }),
-            browser: ['Essenza Pairing', 'Chrome', '1.0.0']
+            browser: Browsers.ubuntu('Chrome') // Using a standard browser config
         });
 
         sock.ev.on('creds.update', saveCreds);
@@ -44,16 +45,19 @@ app.post('/api/pair', async (req, res) => {
             return res.status(400).json({ error: 'This number is already paired. Please use a new number.' });
         }
 
-        // Request the pairing code
+        // Wait 5 seconds before requesting the code to ensure the socket is fully ready
         setTimeout(async () => {
             try {
-                const code = await sock.requestPairingCode(cleanNumber);
-                activeSessions[cleanNumber] = { sock, code, status: 'waiting', sessionId: null };
-                res.json({ success: true, code });
+                const rawCode = await sock.requestPairingCode(cleanNumber);
+                // Format the code with a hyphen (WhatsApp expects XXXX-XXXX)
+                const formattedCode = rawCode.match(/.{1,4}/g).join('-');
+                
+                activeSessions[cleanNumber] = { sock, code: formattedCode, status: 'waiting', sessionId: null };
+                res.json({ success: true, code: formattedCode });
             } catch (e) {
                 res.status(500).json({ error: 'Failed to generate code: ' + e.message });
             }
-        }, 3000);
+        }, 5000); // Increased delay to 5 seconds
 
         // Listen for connection
         sock.ev.on('connection.update', async (update) => {
@@ -62,7 +66,7 @@ app.post('/api/pair', async (req, res) => {
             if (connection === 'open') {
                 console.log(`✅ ${cleanNumber} paired successfully!`);
                 
-                // Wait 5 seconds for all creds (keys, etc) to save to disk
+                // Wait 5 seconds for all creds to save to disk
                 setTimeout(async () => {
                     try {
                         const files = fs.readdirSync(sessionFolder);
@@ -74,7 +78,6 @@ app.post('/api/pair', async (req, res) => {
                             }
                         }
                         
-                        // Convert to Base64 String
                         const sessionId = Buffer.from(JSON.stringify(sessionData)).toString('base64');
                         
                         if (activeSessions[cleanNumber]) {
@@ -82,22 +85,19 @@ app.post('/api/pair', async (req, res) => {
                             activeSessions[cleanNumber].sessionId = sessionId;
                         }
 
-                        // --- SEND SESSION ID TO THE USER'S DM ---
+                        // Send Session ID to the user's DM
                         try {
                             const dmMessage = `🔐 *ESSENZA MD SESSION ID*\n\n` +
-                                              `Here is your generated Session ID. Please keep it secret and do not share it with anyone.\n\n` +
+                                              `Here is your generated Session ID. Please keep it secret.\n\n` +
                                               `\`${sessionId}\`\n\n` +
                                               `Copy the text above and paste it into the *SESSION_ID* environment variable on your hosting panel.`;
                              
-                            // Send to the user's own number (Message Yourself)
                             await sock.sendMessage(cleanNumber + '@s.whatsapp.net', { text: dmMessage });
                             console.log(`📩 Session ID successfully sent to ${cleanNumber} via DM.`);
                         } catch (err) {
                             console.error('Failed to send DM:', err.message);
                         }
-                        // ---------------------------------------------
                         
-                        // Clean up the folder to save space
                         fs.rmSync(sessionFolder, { recursive: true, force: true });
                     } catch (e) {
                         console.error('Error generating session ID:', e);
