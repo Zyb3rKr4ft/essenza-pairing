@@ -1,5 +1,5 @@
 const express = require('express');
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestWaWebVersion } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const fs = require('fs');
 const path = require('path');
@@ -24,9 +24,14 @@ app.post('/api/pair', async (req, res) => {
     if (!fs.existsSync(sessionFolder)) fs.mkdirSync(sessionFolder, { recursive: true });
 
     try {
+        // Fetch the latest WhatsApp Web version to prevent "Couldn't link device" errors
+        const { version, isLatest } = await fetchLatestWaWebVersion();
+        console.log(`Using WA v${version.join('.')}, isLatest: ${isLatest}`);
+
         const { state, saveCreds } = await useMultiFileAuthState(sessionFolder);
         
         const sock = makeWASocket({
+            version: version,
             auth: state,
             printQRInTerminal: false,
             logger: pino({ level: 'silent' }),
