@@ -10,22 +10,22 @@ app.use(express.json());
 app.use(cors());
 app.use(express.static('public'));
 
-// In-memory storage for active sessions
 const activeSessions = {};
 
 app.post('/api/pair', async (req, res) => {
     const { phoneNumber } = req.body;
     if (!phoneNumber) return res.status(400).json({ error: 'Phone number required' });
 
-    // Ensure the number is clean (digits only, with country code)
     const cleanNumber = phoneNumber.replace(/[^0-9]/g, '');
-    
-    // Create a temporary folder for this session
     const sessionFolder = path.join(__dirname, 'temp_sessions', cleanNumber);
-    if (!fs.existsSync(sessionFolder)) fs.mkdirSync(sessionFolder, { recursive: true });
+    
+    // 🛑 FORCE CLEANUP: Delete any old session data so it always generates a fresh code
+    if (fs.existsSync(sessionFolder)) {
+        fs.rmSync(sessionFolder, { recursive: true, force: true });
+    }
+    fs.mkdirSync(sessionFolder, { recursive: true });
 
     try {
-        // Fetch the latest WhatsApp Web version
         const { version, isLatest } = await fetchLatestWaWebVersion();
         console.log(`Using WA v${version.join('.')}, isLatest: ${isLatest}`);
 
@@ -36,20 +36,16 @@ app.post('/api/pair', async (req, res) => {
             auth: state,
             printQRInTerminal: false,
             logger: pino({ level: 'silent' }),
-            browser: Browsers.ubuntu('Chrome') // Using a standard browser config
+            browser: Browsers.ubuntu('Chrome')
         });
 
         sock.ev.on('creds.update', saveCreds);
 
-        if (sock.authState.creds.registered) {
-            return res.status(400).json({ error: 'This number is already paired. Please use a new number.' });
-        }
+        // Removed the "already registered" check because we just deleted the folder anyway
 
-        // Wait 5 seconds before requesting the code to ensure the socket is fully ready
         setTimeout(async () => {
             try {
                 const rawCode = await sock.requestPairingCode(cleanNumber);
-                // Format the code with a hyphen (WhatsApp expects XXXX-XXXX)
                 const formattedCode = rawCode.match(/.{1,4}/g).join('-');
                 
                 activeSessions[cleanNumber] = { sock, code: formattedCode, status: 'waiting', sessionId: null };
@@ -57,16 +53,14 @@ app.post('/api/pair', async (req, res) => {
             } catch (e) {
                 res.status(500).json({ error: 'Failed to generate code: ' + e.message });
             }
-        }, 5000); // Increased delay to 5 seconds
+        }, 5000);
 
-        // Listen for connection
         sock.ev.on('connection.update', async (update) => {
             const { connection, lastDisconnect } = update;
             
             if (connection === 'open') {
                 console.log(`✅ ${cleanNumber} paired successfully!`);
                 
-                // Wait 5 seconds for all creds to save to disk
                 setTimeout(async () => {
                     try {
                         const files = fs.readdirSync(sessionFolder);
@@ -85,7 +79,6 @@ app.post('/api/pair', async (req, res) => {
                             activeSessions[cleanNumber].sessionId = sessionId;
                         }
 
-                        // Send Session ID to the user's DM
                         try {
                             const dmMessage = `🔐 *ESSENZA MD SESSION ID*\n\n` +
                                               `Here is your generated Session ID. Please keep it secret.\n\n` +
@@ -98,7 +91,8 @@ app.post('/api/pair', async (req, res) => {
                             console.error('Failed to send DM:', err.message);
                         }
                         
-                        fs.rmSync(sessionFolder, { recursive: true, force: true });
+                        // Don't delete the folder instantly if you want to allow session recovery later
+                        // fs.rmSync(sessionFolder, { recursive: true, force: true }); 
                     } catch (e) {
                         console.error('Error generating session ID:', e);
                     }
