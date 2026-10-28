@@ -19,7 +19,7 @@ app.post('/api/pair', async (req, res) => {
     const cleanNumber = phoneNumber.replace(/[^0-9]/g, '');
     const sessionFolder = path.join(__dirname, 'temp_sessions', cleanNumber);
     
-    // 🛑 FORCE CLEANUP: Delete any old session data so it always generates a fresh code
+    // Force cleanup to always generate a fresh code
     if (fs.existsSync(sessionFolder)) {
         fs.rmSync(sessionFolder, { recursive: true, force: true });
     }
@@ -36,19 +36,19 @@ app.post('/api/pair', async (req, res) => {
             auth: state,
             printQRInTerminal: false,
             logger: pino({ level: 'silent' }),
-            browser: Browsers.ubuntu('Chrome')
+            browser: Browsers.ubuntu('Chrome'),
+            connectTimeoutMs: 60000,
+            defaultQueryTimeoutMs: 60000,
         });
 
         sock.ev.on('creds.update', saveCreds);
-
-        // Removed the "already registered" check because we just deleted the folder anyway
 
         setTimeout(async () => {
             try {
                 const rawCode = await sock.requestPairingCode(cleanNumber);
                 const formattedCode = rawCode.match(/.{1,4}/g).join('-');
                 
-                activeSessions[cleanNumber] = { sock, code: formattedCode, status: 'waiting', sessionId: null };
+                activeSessions[cleanNumber] = { sock, code: formattedCode, status: 'waiting', sessionId: null, error: null };
                 res.json({ success: true, code: formattedCode });
             } catch (e) {
                 res.status(500).json({ error: 'Failed to generate code: ' + e.message });
@@ -90,9 +90,6 @@ app.post('/api/pair', async (req, res) => {
                         } catch (err) {
                             console.error('Failed to send DM:', err.message);
                         }
-                        
-                        // Don't delete the folder instantly if you want to allow session recovery later
-                        // fs.rmSync(sessionFolder, { recursive: true, force: true }); 
                     } catch (e) {
                         console.error('Error generating session ID:', e);
                     }
@@ -100,8 +97,16 @@ app.post('/api/pair', async (req, res) => {
             }
 
             if (connection === 'close') {
-                const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-                if (!shouldReconnect) console.log(`❌ ${cleanNumber} logged out.`);
+                const statusCode = lastDisconnect?.error?.output?.statusCode;
+                const errorMessage = lastDisconnect?.error?.message || 'Unknown error';
+                
+                console.log(`❌ ${cleanNumber} connection closed. Code: ${statusCode}, Error: ${errorMessage}`);
+                
+                // Save the error to the session so the frontend can display it
+                if (activeSessions[cleanNumber]) {
+                    activeSessions[cleanNumber].status = 'failed';
+                    activeSessions[cleanNumber].error = `Connection failed (Code: ${statusCode}). WhatsApp may be blocking this server's IP.`;
+                }
             }
         });
 
@@ -115,7 +120,7 @@ app.get('/api/status/:phoneNumber', (req, res) => {
     const session = activeSessions[phoneNumber];
     if (!session) return res.status(404).json({ error: 'Session not found' });
     
-    res.json({ status: session.status, sessionId: session.sessionId });
+    res.json({ status: session.status, sessionId: session.sessionId, error: session.error });
 });
 
 const PORT = process.env.PORT || 3000;
