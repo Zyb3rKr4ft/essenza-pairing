@@ -19,10 +19,7 @@ app.post('/api/pair', async (req, res) => {
     const cleanNumber = phoneNumber.replace(/[^0-9]/g, '');
     const sessionFolder = path.join(__dirname, 'temp_sessions', cleanNumber);
     
-    // Force cleanup to always generate a fresh code
-    if (fs.existsSync(sessionFolder)) {
-        fs.rmSync(sessionFolder, { recursive: true, force: true });
-    }
+    if (fs.existsSync(sessionFolder)) fs.rmSync(sessionFolder, { recursive: true, force: true });
     fs.mkdirSync(sessionFolder, { recursive: true });
 
     try {
@@ -38,7 +35,6 @@ app.post('/api/pair', async (req, res) => {
             logger: pino({ level: 'silent' }),
             browser: Browsers.ubuntu('Chrome'),
             connectTimeoutMs: 60000,
-            defaultQueryTimeoutMs: 60000,
         });
 
         sock.ev.on('creds.update', saveCreds);
@@ -47,7 +43,6 @@ app.post('/api/pair', async (req, res) => {
             try {
                 const rawCode = await sock.requestPairingCode(cleanNumber);
                 const formattedCode = rawCode.match(/.{1,4}/g).join('-');
-                
                 activeSessions[cleanNumber] = { sock, code: formattedCode, status: 'waiting', sessionId: null, error: null };
                 res.json({ success: true, code: formattedCode });
             } catch (e) {
@@ -57,10 +52,8 @@ app.post('/api/pair', async (req, res) => {
 
         sock.ev.on('connection.update', async (update) => {
             const { connection, lastDisconnect } = update;
-            
             if (connection === 'open') {
                 console.log(`✅ ${cleanNumber} paired successfully!`);
-                
                 setTimeout(async () => {
                     try {
                         const files = fs.readdirSync(sessionFolder);
@@ -71,41 +64,22 @@ app.post('/api/pair', async (req, res) => {
                                 sessionData[file] = content.toString('base64');
                             }
                         }
-                        
                         const sessionId = Buffer.from(JSON.stringify(sessionData)).toString('base64');
-                        
                         if (activeSessions[cleanNumber]) {
                             activeSessions[cleanNumber].status = 'success';
                             activeSessions[cleanNumber].sessionId = sessionId;
                         }
-
-                        try {
-                            const dmMessage = `🔐 *ESSENZA MD SESSION ID*\n\n` +
-                                              `Here is your generated Session ID. Please keep it secret.\n\n` +
-                                              `\`${sessionId}\`\n\n` +
-                                              `Copy the text above and paste it into the *SESSION_ID* environment variable on your hosting panel.`;
-                             
-                            await sock.sendMessage(cleanNumber + '@s.whatsapp.net', { text: dmMessage });
-                            console.log(`📩 Session ID successfully sent to ${cleanNumber} via DM.`);
-                        } catch (err) {
-                            console.error('Failed to send DM:', err.message);
-                        }
-                    } catch (e) {
-                        console.error('Error generating session ID:', e);
-                    }
+                        await sock.sendMessage(cleanNumber + '@s.whatsapp.net', { text: `🔐 *ESSENZA MD SESSION ID*\n\n\`${sessionId}\`` });
+                    } catch (e) { console.error(e); }
                 }, 5000);
             }
 
             if (connection === 'close') {
                 const statusCode = lastDisconnect?.error?.output?.statusCode;
-                const errorMessage = lastDisconnect?.error?.message || 'Unknown error';
-                
-                console.log(`❌ ${cleanNumber} connection closed. Code: ${statusCode}, Error: ${errorMessage}`);
-                
-                // Save the error to the session so the frontend can display it
+                console.log(`❌ Connection closed. Code: ${statusCode}`);
                 if (activeSessions[cleanNumber]) {
                     activeSessions[cleanNumber].status = 'failed';
-                    activeSessions[cleanNumber].error = `Connection failed (Code: ${statusCode}). WhatsApp may be blocking this server's IP.`;
+                    activeSessions[cleanNumber].error = `Connection failed (Code: ${statusCode}).`;
                 }
             }
         });
@@ -119,7 +93,6 @@ app.get('/api/status/:phoneNumber', (req, res) => {
     const { phoneNumber } = req.params;
     const session = activeSessions[phoneNumber];
     if (!session) return res.status(404).json({ error: 'Session not found' });
-    
     res.json({ status: session.status, sessionId: session.sessionId, error: session.error });
 });
 
