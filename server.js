@@ -96,5 +96,5 @@ app.get('/api/status/:phoneNumber', (req, res) => {
     res.json({ status: session.status, sessionId: session.sessionId, error: session.error });
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => console.log(`Pairing Server running on port ${PORT}`));
